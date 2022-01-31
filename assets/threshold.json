@@ -1,0 +1,7 @@
+{
+    "threshold":
+    {
+        "cutover": 255,
+        "invert": false
+    }
+}
