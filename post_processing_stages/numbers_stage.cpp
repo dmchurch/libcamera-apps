@@ -12,10 +12,9 @@ namespace {
 	using boost::property_tree::ptree;
 
 	class BitRow: public std::bitset<BITS> {
+		using bitset::bitset;
 	public:
-		BitRow() {}
-		constexpr BitRow(unsigned long long i) noexcept: bitset(i) {}
-		constexpr BitRow(std::bitset<BITS> bs) noexcept: bitset(bs) {}
+		constexpr BitRow(bitset bs) noexcept: bitset(bs) {}
 	};
 
 	class Digit
