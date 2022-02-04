@@ -8,9 +8,15 @@
 #define BITS 32
 
 namespace {
-	using Stream = libcamera::Stream;
-	using ptree = boost::property_tree::ptree;
-	using bitset = std::bitset<BITS>;
+	using libcamera::Stream;
+	using boost::property_tree::ptree;
+
+	class BitRow: public std::bitset<BITS> {
+	public:
+		BitRow() {}
+		constexpr BitRow(unsigned long long i) noexcept: bitset(i) {}
+		constexpr BitRow(std::bitset<BITS> bs) noexcept: bitset(bs) {}
+	};
 
 	class Digit
 	{
@@ -20,13 +26,13 @@ namespace {
 		void Read(ptree const &def);
 		void Expand(int factor);
 		void SetHints(int offset, int shift);
-		int Score(const bitset data[], int rows);
-		int Score(const bitset data[], int rows, int offset_hint, int shift_hint);
-		int FullScore(const bitset data[], int rows);
-		int FullScore(const bitset data[], int rows, int offset_min, int offset_max, int spacing = 0);
-		int FullScore(const bitset data[], int rows, int offset_min, int offset_max, int shift_min, int shift_max, int spacing = 0);
-		void ShowScore(const bitset data[], int rows) {return ShowScore(data, rows, last_offset, last_shift);}
-		void ShowScore(const bitset data[], int rows, int offset, int shift);
+		int Score(const BitRow data[], int rows);
+		int Score(const BitRow data[], int rows, int offset_hint, int shift_hint);
+		int FullScore(const BitRow data[], int rows);
+		int FullScore(const BitRow data[], int rows, int offset_min, int offset_max, int spacing = 0);
+		int FullScore(const BitRow data[], int rows, int offset_min, int offset_max, int shift_min, int shift_max, int spacing = 0);
+		void ShowScore(const BitRow data[], int rows) {return ShowScore(data, rows, last_offset, last_shift);}
+		void ShowScore(const BitRow data[], int rows, int offset, int shift);
 
 		int digit_spacing;
 		Digit *prev = NULL;
@@ -42,12 +48,12 @@ namespace {
 		bool has_hints_ = false;
 		int n_rows_;
 		int width_;
-		std::unique_ptr<bitset[]> data_;
+		std::unique_ptr<BitRow[]> data_;
 
-		int score_area_(const bitset data[], int rows, int offset, int shift);
-		int score_row_(const bitset myrow, const bitset data, int shift);
-		void show_score_(const bitset data[], int rows) {return show_score_(data, rows, last_offset, last_shift);}
-		void show_score_(const bitset data[], int rows, int offset, int shift);
+		int score_area_(const BitRow data[], int rows, int offset, int shift);
+		int score_row_(const BitRow myrow, const BitRow data, int shift);
+		void show_score_(const BitRow data[], int rows) {return show_score_(data, rows, last_offset, last_shift);}
+		void show_score_(const BitRow data[], int rows, int offset, int shift);
 	};
 
 	class NumbersStage : public PostProcessingStage
@@ -77,7 +83,7 @@ namespace {
 		int left_[2], right_[2];
 		int width_, height_, stride_;
 		int charrows_;
-		std::unique_ptr<bitset[]> chardata_;
+		std::unique_ptr<BitRow[]> chardata_;
 	};
 
 	#define NAME "numbers"
@@ -90,7 +96,7 @@ namespace {
 	void Digit::Read(ptree const &def)
 	{
 		n_rows_ = def.size();
-		data_ = std::make_unique<bitset[]>(n_rows_);
+		data_ = std::make_unique<BitRow[]>(n_rows_);
 		width_ = 0;
 		if (verbose)
 			std::cerr << "Reading digit " << glyph << " with " << n_rows_ << " rows:" << std::endl;
@@ -98,7 +104,7 @@ namespace {
 		int r = 0;
 		for (auto &&row : def)
 		{
-			bitset rval = 0;
+			BitRow rval = 0;
 			std::string str = row.second.get_value<std::string>();
 			width_ = std::max(width_, (int)str.length());
 			for (unsigned int i = 0; i < str.length(); i++) {
@@ -114,8 +120,8 @@ namespace {
 	void Digit::Expand(int factor) {
 		if (verbose)
 			std::cerr << "Expanding digit " << glyph << " by " << factor << std::endl;
-		auto new_data = std::make_unique<bitset[]>(n_rows_ * factor);
-		bitset *ptr = new_data.get();
+		auto new_data = std::make_unique<BitRow[]>(n_rows_ * factor);
+		BitRow *ptr = new_data.get();
 		for (int r = 0; r < n_rows_; r++) {
 			for (int i = 0; i < factor; i++) {
 				*ptr++ = data_[r];
@@ -133,7 +139,7 @@ namespace {
 	// 	has_hints_ = true;
 	// }
 
-	// int Digit::Score(const bitset data[], int rows) {
+	// int Digit::Score(const BitRow data[], int rows) {
 	// 	if (has_hints_) {
 	// 		return Score(data, rows, has_hints_ ? last_offset : (rows - n_rows_) / 2, has_hints_ ? last_shift : (BITS - width_) / 2);
 	// 	} else {
@@ -141,19 +147,19 @@ namespace {
 	// 	}
 	// }
 
-	// int Digit::Score(const bitset data[], int rows, int offset_hint, int shift_hint) {
+	// int Digit::Score(const BitRow data[], int rows, int offset_hint, int shift_hint) {
 	// 	int score = score_area_(data, rows, offset_hint, shift_hint);
 	// 	return score;
 	// }
-	int Digit::FullScore(const bitset data[], int rows) {
+	int Digit::FullScore(const BitRow data[], int rows) {
 		return FullScore(data, rows, -n_rows_ + 1, rows - 1, digit_spacing);
 	}
 
-	int Digit::FullScore(const bitset data[], int rows, int offset_min, int offset_max, int spacing) {
+	int Digit::FullScore(const BitRow data[], int rows, int offset_min, int offset_max, int spacing) {
 		return FullScore(data, rows, offset_min, offset_max, 0, BITS - width_, spacing);
 	}
 
-	int Digit::FullScore(const bitset data[], int rows, int offset_min, int offset_max, int shift_min, int shift_max, int spacing) {
+	int Digit::FullScore(const BitRow data[], int rows, int offset_min, int offset_max, int shift_min, int shift_max, int spacing) {
 		int best_score = 0;
 		for (int offset = offset_min; offset <= offset_max; offset++) {
 			for (int shift = shift_min; shift <= shift_max; shift++) {
@@ -183,8 +189,8 @@ namespace {
 		return best_score;
 	}
 
-	int Digit::score_area_(const bitset *data, int rows, int offset, int shift) {
-		const bitset *myrow = data_.get();
+	int Digit::score_area_(const BitRow *data, int rows, int offset, int shift) {
+		const BitRow *myrow = data_.get();
 		int myrows = n_rows_;
 		int score = 0;
 		if (offset <= 0) {
@@ -203,9 +209,9 @@ namespace {
 		return score;
 	}
 
-	int Digit::score_row_(const bitset myrow, const bitset data, int shift) {
-		bitset shiftrow = myrow << shift;
-		bitset xorrow = shiftrow ^ data;
+	int Digit::score_row_(const BitRow myrow, const BitRow data, int shift) {
+		BitRow shiftrow = myrow << shift;
+		BitRow xorrow = shiftrow ^ data;
 		int expectednotfound = (shiftrow & xorrow).count();
 		int expectedandfound = (shiftrow & ~xorrow).count();
 		// int score = BITS - xorrow.count() - expectednotfound * 4 + expectedandfound;
@@ -232,7 +238,7 @@ namespace {
 		return score;
 	}
 
-	void Digit::ShowScore(const bitset data[], int rows, int offset, int shift) {
+	void Digit::ShowScore(const BitRow data[], int rows, int offset, int shift) {
 		FullScore(data, rows, offset, offset, shift, shift, digit_spacing);
 		if (last_spacing < 0) {
 			prev->show_score_(data, rows);
@@ -245,7 +251,7 @@ namespace {
 		}
 	}
 
-	void Digit::show_score_(const bitset data[], int rows, int offset, int shift) {
+	void Digit::show_score_(const BitRow data[], int rows, int offset, int shift) {
 		print_score_ = true;
 		score_area_(data, rows, offset, shift);
 		print_score_ = false;
@@ -310,7 +316,7 @@ namespace {
 		top_ = ftop_ * height_;
 		bottom_ = fbottom_ * height_;
 		charrows_ = bottom_ - top_;
-		chardata_ = std::make_unique<bitset[]>(n_chars_ * charrows_);
+		chardata_ = std::make_unique<BitRow[]>(n_chars_ * charrows_);
 		factor_ = (right_[0] - left_[0]) / n_chars_ / h_res_;
 		if (verbose)
 			printf("size: %s, stride: %d, frameSize: %d, pixfmt: %s, factor: %d\n", config.size.toString().c_str(), config.stride, config.frameSize, pixfmt.toString().c_str(), factor_);
@@ -365,7 +371,7 @@ namespace {
 		for (int i = 0; i < n_chars_; i++) {
 			int best_score = 0;
 			Digit *best_digit = NULL;
-			bitset *chardata = &chardata_[i * rows];
+			BitRow *chardata = &chardata_[i * rows];
 			if (verbose) {
 				std::cout << "Char " << i << ":" << std::endl;
 				for (int r = 0; r < rows; r += factor_) {
