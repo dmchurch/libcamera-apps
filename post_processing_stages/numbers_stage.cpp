@@ -15,13 +15,6 @@ class Digit
 {
 public:
 	Digit() {}
-	~Digit() {
-		// std::cerr << "~Digit" << std::endl;
-		if (data_ != NULL) {
-			delete data_;
-			data_ = NULL;
-		}
-	}
 	std::string glyph;
 	void Read(ptree const &def);
 	void Expand(int factor);
@@ -48,7 +41,7 @@ private:
 	bool has_hints_ = false;
 	int n_rows_;
 	int width_;
-	bitset *data_ = NULL;
+	std::unique_ptr<bitset[]> data_;
 
 	int score_area_(const bitset data[], int rows, int offset, int shift);
 	int score_row_(const bitset myrow, const bitset data, int shift);
@@ -60,13 +53,6 @@ class NumbersStage : public PostProcessingStage
 {
 public:
 	NumbersStage(LibcameraApp *app) : PostProcessingStage(app) {}
-	~NumbersStage() {
-		// std::cerr << "~NumbersStage" << std::endl;
-		if (chardata_ != NULL) {
-			delete chardata_;
-			chardata_ = NULL;
-		}
-	}
 
 	char const *Name() const override;
 
@@ -90,7 +76,7 @@ private:
 	int left_[2], right_[2];
 	int width_, height_, stride_;
 	int charrows_;
-	bitset *chardata_ = NULL;
+	std::unique_ptr<bitset[]> chardata_;
 };
 
 #define NAME "numbers"
@@ -103,7 +89,7 @@ char const *NumbersStage::Name() const
 void Digit::Read(ptree const &def)
 {
 	n_rows_ = def.size();
-	data_ = new bitset[n_rows_];
+	data_ = std::make_unique<bitset[]>(n_rows_);
 	width_ = 0;
 	if (verbose)
 		std::cerr << "Reading digit " << glyph << " with " << n_rows_ << " rows:" << std::endl;
@@ -127,17 +113,16 @@ void Digit::Read(ptree const &def)
 void Digit::Expand(int factor) {
 	if (verbose)
 		std::cerr << "Expanding digit " << glyph << " by " << factor << std::endl;
-	bitset *curdata = data_;
-	data_ = new bitset[n_rows_ * factor];
-	bitset *ptr = data_;
+	auto new_data = std::make_unique<bitset[]>(n_rows_ * factor);
+	bitset *ptr = new_data.get();
 	for (int r = 0; r < n_rows_; r++) {
 		for (int i = 0; i < factor; i++) {
-			*ptr++ = curdata[r];
+			*ptr++ = data_[r];
 			// std::cerr << "+ " << curdata[r] << std::endl;
 		}
 	}
+	data_ = std::move(new_data);
 	n_rows_ *= factor;
-	delete curdata;
 }
 
 
@@ -198,7 +183,7 @@ int Digit::FullScore(const bitset data[], int rows, int offset_min, int offset_m
 }
 
 int Digit::score_area_(const bitset *data, int rows, int offset, int shift) {
-	const bitset *myrow = data_;
+	const bitset *myrow = data_.get();
 	int myrows = n_rows_;
 	int score = 0;
 	if (offset <= 0) {
@@ -324,7 +309,7 @@ void NumbersStage::Configure()
 	top_ = ftop_ * height_;
 	bottom_ = fbottom_ * height_;
 	charrows_ = bottom_ - top_;
-	chardata_ = new bitset[n_chars_ * charrows_];
+	chardata_ = std::make_unique<bitset[]>(n_chars_ * charrows_);
 	factor_ = (right_[0] - left_[0]) / n_chars_ / h_res_;
 	if (verbose)
 		printf("size: %s, stride: %d, frameSize: %d, pixfmt: %s, factor: %d\n", config.size.toString().c_str(), config.stride, config.frameSize, pixfmt.toString().c_str(), factor_);
@@ -379,7 +364,7 @@ bool NumbersStage::Process(CompletedRequestPtr &completed_request)
 	for (int i = 0; i < n_chars_; i++) {
 		int best_score = 0;
 		Digit *best_digit = NULL;
-		bitset *chardata = chardata_ + (i * rows);
+		bitset *chardata = &chardata_[i * rows];
 		if (verbose) {
 			std::cout << "Char " << i << ":" << std::endl;
 			for (int r = 0; r < rows; r += factor_) {
