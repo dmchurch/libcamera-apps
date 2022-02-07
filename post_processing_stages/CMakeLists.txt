@@ -51,5 +51,6 @@ endif()
 add_library(post_processing_stages ${SRC})
 target_link_libraries(post_processing_stages ${TARGET_LIBS})
 target_compile_definitions(post_processing_stages PUBLIC OPENCV_PRESENT=${OpenCV_FOUND})
+set_property(TARGET post_processing_stages PROPERTY CXX_STANDARD 20)
 
 install(TARGETS post_processing_stages LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR} ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})

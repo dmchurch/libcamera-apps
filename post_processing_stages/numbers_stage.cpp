@@ -19,24 +19,23 @@ namespace {
 		constexpr BitPos(int offset, int shift = 0): offset(offset), shift(shift) { }
 
 		constexpr operator bool() const { return offset != SHRT_MIN && shift != SHRT_MIN; }
-		constexpr bool operator==(BitPos rhs) const { return offset == rhs.offset && shift == rhs.shift; }
-		constexpr bool operator!=(BitPos rhs) const { return offset != rhs.offset || shift != rhs.shift; }
+		constexpr bool operator==(const BitPos &) const = default;
 
-		// single-axis comparisons
-		constexpr bool below(BitPos rhs) const { return offset > rhs.offset; }
-		constexpr bool above(BitPos rhs) const { return offset < rhs.offset; }
-		constexpr bool left_of(BitPos rhs) const { return shift > rhs.shift; }
-		constexpr bool right_of(BitPos rhs) const { return shift < rhs.shift; }
-		constexpr bool at_or_below(BitPos rhs) const { return offset >= rhs.offset; }
-		constexpr bool at_or_above(BitPos rhs) const { return offset <= rhs.offset; }
-		constexpr bool at_or_left_of(BitPos rhs) const { return shift >= rhs.shift; }
-		constexpr bool at_or_right_of(BitPos rhs) const { return shift <= rhs.shift; }
-
-		// partial ordering: BOTH coordinates must satisfy the inequality
-		constexpr bool operator<(BitPos rhs) const { return offset < rhs.offset && shift < rhs.shift; }
-		constexpr bool operator<=(BitPos rhs) const { return offset <= rhs.offset && shift <= rhs.shift; }
-		constexpr bool operator>(BitPos rhs) const { return offset > rhs.offset && shift > rhs.shift; }
-		constexpr bool operator>=(BitPos rhs) const { return offset >= rhs.offset && shift >= rhs.shift; }
+		struct ordering: std::partial_ordering {
+			using so = std::strong_ordering;
+			using po = std::partial_ordering;
+			so offset;
+			so shift;
+			constexpr ordering(so offset, so shift): po(partial(offset, shift)), offset(offset), shift(shift) { }
+		private:
+			static constexpr po partial(so offset, so shift) {
+				return (offset == shift) ? offset
+					 : (offset == 0) ? shift
+					 : (shift == 0) ? offset
+					 : po::unordered;
+			}
+		};
+		constexpr ordering operator<=>(const BitPos &rhs) const { return { offset <=> rhs.offset, shift <=> rhs.shift }; }
 
 		// operators +, -, <<, >> on int: shift position down, up, left, or right
 		constexpr BitPos &operator+=(int o) { offset += o; return *this; }
@@ -56,102 +55,102 @@ namespace {
 	};
 	static_assert(sizeof(BitPos) == 4, "BitPos doesn't fit in 32 bits");
 
+	constexpr auto &clamp_up(auto &lhs, int rhs) { return lhs = std::max(lhs, std::remove_reference_t<decltype(lhs)>(rhs)); }
+	constexpr auto &clamp_down(auto &lhs, int rhs) { return lhs = std::min(lhs, std::remove_reference_t<decltype(lhs)>(rhs)); }
+
 	struct BitRange {
-		BitPos origin; // actually the upper-right corner
-		short height;
-		short width;
+		BitPos from; // actually the upper-right corner
+		BitPos to; // delta to just past the lower-left corner
 
-		constexpr BitRange(): height(0), width(0) { }
-		constexpr explicit BitRange(int height, int width = BITS, int offset = 0, int shift = 0): origin(offset, shift), height(height), width(width) { }
-		constexpr BitRange(int height, int width, BitPos origin): origin(origin), height(height), width(width) { }
+		constexpr BitRange() { }
+		constexpr explicit BitRange(int height): BitRange(height, BITS) { }
+		constexpr BitRange(int height, int width, int offset = 0, int shift = 0): from(offset, shift), to(offset + height - 1, shift + width - 1) { }
+		constexpr BitRange(int height, int width, BitPos origin): BitRange(height, width, origin.offset, origin.shift) { }
+		constexpr BitRange(BitPos from, BitPos to): from(from), to(to) { }
 
-		constexpr int offset_min() const { return origin.offset; }
-		constexpr int offset_max() const { return origin.offset + height - 1; }
-		constexpr int shift_min() const { return origin.shift; }
-		constexpr int shift_max() const { return origin.shift + width - 1; }
-		constexpr BitPos pos_min() const { return origin; }
-		constexpr BitPos pos_max() const { return {offset_max(), shift_max()}; }
+		constexpr int height() { return (to - from).offset + 1; }
+		constexpr int width() { return (to - from).shift + 1; }
 
-		constexpr operator bool() const { return origin && height > 0 && width > 0; }
+		constexpr BitPos pos_min() const { return from; }
+		constexpr BitPos pos_max() const { return to; }
+		constexpr int offset_min() const { return from.offset; }
+		constexpr int offset_max() const { return to.offset; }
+		constexpr int shift_min() const { return from.shift; }
+		constexpr int shift_max() const { return to.shift; }
 
-		constexpr bool contains(BitPos pos) { return pos >= pos_min() && pos <= pos_max(); }
-		constexpr bool contains(BitRange other) { return other.pos_min() >= pos_min() && other.pos_max() <= pos_max(); }
-		constexpr bool intersects(BitRange other) { return bool(*this * other); }
+		constexpr explicit operator bool() const { return from && to > from; }
+		constexpr bool operator==(const BitRange &) const = default;
 
-		constexpr BitRange &center() { origin.shift = (BITS - width) / 2; return *this; }
-		constexpr BitRange &to_origin() { origin = {0, 0}; return *this; }
+		constexpr bool contains(BitPos pos) { return pos >= from && pos <= to; }
+		constexpr bool contains(BitRange other) { return other && other.from >= from && other.to <= to; }
+
+		constexpr BitRange &&center();
+		constexpr BitRange &&to_origin();
 		constexpr BitRange centered() const { return BitRange(*this).center(); }
 		constexpr BitRange at_origin() const { return BitRange(*this).to_origin(); }
-
-		// operators +, -, <<, >> on int: shift range (origin) down, up, left, or right
-		constexpr BitRange &operator+=(int o) { origin += o; return *this; }
-		constexpr BitRange &operator-=(int o) { origin -= o; return *this; }
-		constexpr BitRange &operator<<=(int s) { origin <<= s; return *this; }
-		constexpr BitRange &operator>>=(int s) { origin <<= s; return *this; }
-		friend constexpr BitRange operator+(BitRange br, int o) { return BitRange(br) += o; }
-		friend constexpr BitRange operator-(BitRange br, int o) { return BitRange(br) -= o; }
-		friend constexpr BitRange operator<<(BitRange br, int o) { return BitRange(br) <<= o; }
-		friend constexpr BitRange operator>>(BitRange br, int o) { return BitRange(br) >>= o; }
-
-		// operators +, - on BitPos: shift along both axes
-		constexpr BitRange &operator+=(BitPos rhs) { origin += rhs; return *this; }
-		constexpr BitRange &operator-=(BitPos rhs) { origin -= rhs; return *this; }
-		friend constexpr BitRange operator+(BitRange lhs, BitPos rhs) { return BitRange(lhs) += rhs; }
-		friend constexpr BitRange operator-(BitRange lhs, BitPos rhs) { return BitRange(lhs) -= rhs; }
-
-		// operators +, *, -, / on BitRange: contiguous union, intersection, asymmetric convex difference by offset, asymmetric convex difference by shift
-		constexpr BitRange &operator+=(BitRange rhs) {
-			int omin = std::min(offset_min(), rhs.offset_min());
-			int omax = std::max(offset_max(), rhs.offset_max());
-			int smin = std::min(shift_min(), rhs.shift_min());
-			int smax = std::max(shift_max(), rhs.shift_max());
-			origin = {omin, smin};
-			height = omax - omin + 1;
-			width = smax - smin + 1;
-			return *this;
-		}
-		constexpr BitRange &operator*=(BitRange rhs) {
-			int omin = std::max(offset_min(), rhs.offset_min());
-			int omax = std::min(offset_max(), rhs.offset_max());
-			int smin = std::max(shift_min(), rhs.shift_min());
-			int smax = std::min(shift_max(), rhs.shift_max());
-			origin = {omin, smin};
-			height = omax - omin + 1;
-			width = smax - smin + 1;
-			return *this;
-		}
-		constexpr BitRange &operator-=(BitRange rhs) {
-			if (rhs.origin.at_or_below(origin)) {
-				// keep our top segment
-				height = std::min(int(height), rhs.origin.offset - origin.offset);
-			} else {
-				// keep our bottom segment
-				int omin = std::max(offset_min(), rhs.offset_max() + 1);
-				int omax = offset_max();
-				origin.offset = omin;
-				height = omax - omin + 1;
-			}
-			return *this;
-		}
-		constexpr BitRange &operator/=(BitRange rhs) {
-			if (rhs.origin.at_or_left_of(origin)) {
-				// keep our right segment
-				width = std::min(int(width), rhs.origin.shift - origin.shift);
-			} else {
-				// keep our left segment
-				int smin = std::max(shift_min(), rhs.shift_max() + 1);
-				int smax = shift_max();
-				origin.shift = smin;
-				width = smax - smin + 1;
-			}
-			return *this;
-		}
-		friend constexpr BitRange operator+(BitRange lhs, BitRange rhs) { return BitRange(lhs) += rhs; };
-		friend constexpr BitRange operator*(BitRange lhs, BitRange rhs) { return BitRange(lhs) *= rhs; };
-		friend constexpr BitRange operator-(BitRange lhs, BitRange rhs) { return BitRange(lhs) -= rhs; };
-		friend constexpr BitRange operator/(BitRange lhs, BitRange rhs) { return BitRange(lhs) /= rhs; };
 	};
 	static_assert(sizeof(BitRange) == 8, "BitRange doesn't fit in 64 bits");
+
+	// BitRange operators declared outside the class, so they can get picked up by subclass ADL
+	
+	// operators +, -, <<, >> on int: shift range (origin) down, up, left, or right
+	constexpr auto operator+=(std::derived_from<BitRange> auto &&br, int o) -> decltype(br) { br.from += o; br.to += o; return std::forward<decltype(br)>(br); }
+	constexpr auto operator-=(std::derived_from<BitRange> auto &&br, int o) -> decltype(br) { br.from -= o; br.to -= o; return std::forward<decltype(br)>(br); }
+	constexpr auto operator<<=(std::derived_from<BitRange> auto &&br, int s) -> decltype(br) { br.from <<= s; br.to <<= s; return std::forward<decltype(br)>(br); }
+	constexpr auto operator>>=(std::derived_from<BitRange> auto &&br, int s) -> decltype(br) { br.from >>= s; br.to >>= s; return std::forward<decltype(br)>(br); }
+	constexpr auto operator+(std::derived_from<BitRange> auto br, int o) -> decltype(br) { return decltype(br)(br) += o; }
+	constexpr auto operator-(std::derived_from<BitRange> auto br, int o) -> decltype(br) { return decltype(br)(br) -= o; }
+	constexpr auto operator<<(std::derived_from<BitRange> auto br, int o) -> decltype(br) { return decltype(br)(br) <<= o; }
+	constexpr auto operator>>(std::derived_from<BitRange> auto br, int o) -> decltype(br) { return decltype(br)(br) >>= o; }
+
+	// operators +, - on BitPos: shift along both axes
+	constexpr auto operator+=(std::derived_from<BitRange> auto &&br, BitPos pos) -> decltype(br) { br.from += pos; br.to += pos; return std::forward<decltype(br)>(br); }
+	constexpr auto operator-=(std::derived_from<BitRange> auto &&br, BitPos pos) -> decltype(br) { br.from -= pos; br.to -= pos; return std::forward<decltype(br)>(br); }
+	constexpr auto operator+(std::derived_from<BitRange> auto br, BitPos pos) -> decltype(br) { return decltype(br)(br) += pos; }
+	constexpr auto operator-(std::derived_from<BitRange> auto br, BitPos pos) -> decltype(br) { return decltype(br)(br) -= pos; }
+
+	constexpr BitRange &&BitRange::center() { return std::forward<BitRange>(*this) <<= ((BITS - width()) / 2 - from.shift); }
+	constexpr BitRange &&BitRange::to_origin() { return std::forward<BitRange>(*this) -= from; }
+
+	// operators +, *, -, / on BitRange: contiguous convex union, intersection, asymmetric convex difference by offset, asymmetric convex difference by shift
+	constexpr auto operator+=(std::derived_from<BitRange> auto &&lhs, BitRange rhs) -> decltype(lhs) {
+		clamp_down(lhs.from.offset, rhs.from.offset);
+		clamp_down(lhs.from.shift, rhs.from.shift);
+		clamp_up(lhs.to.offset, rhs.to.offset);
+		clamp_up(lhs.to.shift, rhs.to.shift);
+		return std::forward<decltype(lhs)>(lhs);
+	}
+	constexpr auto operator*=(std::derived_from<BitRange> auto &&lhs, BitRange rhs) -> decltype(lhs) {
+		clamp_up(lhs.from.offset, rhs.from.offset);
+		clamp_up(lhs.from.shift, rhs.from.shift);
+		clamp_down(lhs.to.offset, rhs.to.offset);
+		clamp_down(lhs.to.shift, rhs.to.shift);
+		return std::forward<decltype(lhs)>(lhs);
+	}
+	constexpr auto operator-=(std::derived_from<BitRange> auto &&lhs, BitRange rhs) -> decltype(lhs) {
+		if (rhs.from.offset >= lhs.from.offset) {
+			// keep our top (that is, low-offset) segment
+			clamp_down(lhs.to.offset, rhs.from.offset - 1);
+		} else {
+			// keep our bottom (high-offset) segment
+			clamp_up(lhs.from.offset, rhs.to.offset + 1);
+		}
+		return std::forward<decltype(lhs)>(lhs);
+	}
+	constexpr auto operator/=(std::derived_from<BitRange> auto &&lhs, BitRange rhs) -> decltype(lhs) {
+		if (rhs.from.shift >= lhs.from.shift) {
+			// keep our right (low-shift) segment
+			clamp_down(lhs.to.shift, rhs.from.shift - 1);
+		} else {
+			// keep our left segment
+			clamp_up(lhs.from.shift, rhs.to.shift + 1);
+		}
+		return std::forward<decltype(lhs)>(lhs);
+	}
+	constexpr auto operator+(std::derived_from<BitRange> auto lhs, BitRange rhs) -> decltype(lhs) { return decltype(lhs)(lhs) += rhs; }
+	constexpr auto operator*(std::derived_from<BitRange> auto lhs, BitRange rhs) -> decltype(lhs) { return decltype(lhs)(lhs) *= rhs; }
+	constexpr auto operator-(std::derived_from<BitRange> auto lhs, BitRange rhs) -> decltype(lhs) { return decltype(lhs)(lhs) -= rhs; }
+	constexpr auto operator/(std::derived_from<BitRange> auto lhs, BitRange rhs) -> decltype(lhs) { return decltype(lhs)(lhs) /= rhs; }
 }
 
 /////////////////////////////////////////////////////
@@ -167,6 +166,105 @@ namespace {
 		friend std::ostream &operator<<(std::ostream &os, BitRow br) { return os << br.to_string('.','#'); }
 	};
 
+	template<class TData>
+	concept BitDataSrc = requires (std::remove_pointer_t<TData> data, int i) {
+		requires std::is_object_v<TData>;
+		requires std::copyable<TData>;
+		{ data[i] } -> std::convertible_to<BitRow>;
+	};
+
+	static_assert(BitDataSrc<std::vector<BitRow>>);
+	static_assert(BitDataSrc<std::vector<BitRow>*>);
+	static_assert(!BitDataSrc<std::vector<BitRow>**>);
+	static_assert(BitDataSrc<BitRow**>);
+	static_assert(!BitDataSrc<BitRow*>);
+
+	template<class TOp, class TRhs>
+	concept BitRowOp = (std::same_as<TRhs, void> && std::regular_invocable<TOp, BitRow>) || std::regular_invocable<TOp, BitRow, TRhs>;
+
+	template<BitDataSrc TLhs, class TRhs, BitRowOp<TRhs> TOp>
+	struct BitOpData {
+		const TLhs lhs;
+		const TRhs rhs;
+		BitRow operator[](int o) { return TOp{}(lhs[o], rhs[o]); }
+	};
+	template<BitDataSrc TLhs, BitRowOp<void> TOp>
+	struct BitOpData<TLhs, void, TOp> {
+		const TLhs &lhs;
+		BitRow operator[](int o) { return TOp{}(lhs[o]); }
+	};
+
+	// A BitRange that knows how to access bit data.
+	template<BitDataSrc TData, bool INDIRECT = false>
+	class BitView: public BitRange {
+	public:
+		using Data = TData;
+		constexpr BitView(TData data, BitRange range): BitRange(range), data_(data) { }
+
+		template<bool FWD = true>
+		struct iterator {
+			using iterator_concept = std::random_access_iterator_tag;
+			using iterator_category = std::random_access_iterator_tag;
+			using value_type = BitRow;
+			using difference_type = int;
+			using pointer = BitRow*;
+			using reference = BitRow&;
+
+			constexpr iterator() = default;
+			explicit iterator(const BitView &view, int offset): view(&view), offset(offset) { }
+			explicit operator int() const { return offset; }
+			iterator &operator+=(int o) { offset += FWD ? o : -o; return *this; }
+			iterator &operator++() { return *this += 1; }
+			iterator operator++(int) { iterator rval = *this; ++(*this); return rval; }
+			iterator &operator-=(int o) { offset += FWD ? -o : o; return *this; }
+			iterator &operator--() { return *this -= 1; }
+			iterator operator--(int) { iterator rval = *this; --(*this); return rval; }
+			friend iterator operator+(const iterator &it, int o) { return iterator{it} += o; }
+			friend iterator operator+(int o, const iterator &it) { return iterator{it} += o; }
+			friend iterator operator-(const iterator &it, int o) { return iterator{it} -= o; }
+			friend iterator operator-(int o, const iterator &it) { return iterator{it} -= o; }
+			int operator-(const iterator &other) const { return offset - other.offset; }
+			std::partial_ordering operator<=>(iterator other) const { return view == other.view ? offset <=> other.offset : std::partial_ordering::unordered; }
+			bool operator==(const iterator &other) const = default;
+			reference operator*() { return (*view)[offset]; }
+			const reference operator*() const { return (*view)[offset]; }
+			pointer operator->() { return &(*view)[offset]; }
+			reference operator[](int o) { return (*view)[offset + o]; }
+			const reference operator[](int o) const { return (*view)[offset + o]; }
+		private:
+			const BitView *view;
+			int offset;
+		};
+
+		iterator<> const cbegin() const { return iterator(*this, from.offset); }
+		iterator<> const begin() const { return iterator(*this, from.offset); }
+		const iterator<> cend() const { return iterator(*this, to.offset + 1); }
+		const iterator<> end() const { return iterator(*this, to.offset + 1); }
+
+		constexpr BitRow operator[](int i) const requires (!INDIRECT) { return data()[i]; }
+		constexpr BitRow operator[](int i) const requires (INDIRECT) { return data()[i - from.offset] << from.shift; }
+		constexpr bool operator[](BitPos p) const { return (*this)[p.offset][p.shift]; }
+
+		constexpr BitView<TData, false> fixed() const requires (INDIRECT) { return {data_, *this}; }
+
+		int count() const {
+			int count = 0;
+			for (int o = from.offset; o <= to.offset; o++) {
+				count += (*this)[o].count();
+			}
+			return count;
+		}
+
+	protected:
+		constexpr std::remove_pointer_t<TData> &data() const requires (std::is_pointer_v<TData>) { return *data_; }
+		constexpr std::remove_pointer_t<TData> &data() const requires (!std::is_pointer_v<TData>) { return data_; }
+		TData data_;
+	};
+
+	static_assert(std::copyable<BitView<BitRow**>>);
+
+	struct BitMatrixView;
+	struct BitMatrixStamp;
 	class BitMatrix {
 	public:
 		BitMatrix(): height_(0), width_(BITS) {}
@@ -183,6 +281,10 @@ namespace {
 		const BitRow *end() const & { return &data_[height_]; }
 		const BitRow *cend() const & { return &data_[height_]; }
 
+		BitMatrixView view() const;
+		BitMatrixStamp stamp() const;
+		operator BitMatrixView() const;
+
 		void set() { for (int i = 0; i < height_; i++) data_[i].set(); }
 		void set(int offset, int shift, bool value = true) { data_[offset].set(shift, value); }
 		void set(BitPos pos, bool value = true) { set(pos.offset, pos.shift, value); }
@@ -197,8 +299,40 @@ namespace {
 		short width_;
 		std::unique_ptr<BitRow[]> data_;
 	};
-}
+	static_assert(std::copyable<BitRange>);
+	static_assert(std::movable<BitMatrix>);
 
+	struct BitMatrixView: BitView<const BitMatrix *, false> {
+		using BitView::BitView;
+	};
+	static_assert(std::ranges::random_access_range<BitMatrixView>);
+	struct BitMatrixStamp: BitView<const BitMatrix *, true> {
+		using BitView::BitView;
+	};
+
+	BitMatrixView BitMatrix::view() const {
+		return {this, {height_, width_}};
+	}
+	[[maybe_unused]]
+	BitMatrix::operator BitMatrixView() const {
+		return view();
+	}
+
+	template<class TView>
+	concept BitViewType = std::derived_from<TView, BitView<typename TView::Data, false>>
+						|| std::derived_from<TView, BitView<typename TView::Data, true>>;
+	static_assert(BitViewType<BitMatrixView>);
+	static_assert(BitViewType<BitMatrixStamp>);
+	static_assert(std::copyable<BitMatrixStamp>);
+	static_assert(std::copyable<BitView<BitMatrix*>>);
+	static_assert(BitDataSrc<BitMatrixStamp>);
+
+	// BitView bitwise operators
+	auto operator&(BitViewType auto lhs, BitViewType auto rhs) -> BitView<BitOpData<decltype(lhs), decltype(rhs), std::bit_and<BitRow>>> { return {{lhs, rhs}, lhs * rhs}; }
+	auto operator|(BitViewType auto lhs, BitViewType auto rhs) -> BitView<BitOpData<decltype(lhs), decltype(rhs), std::bit_or<BitRow>>> { return {{lhs, rhs}, lhs * rhs}; }
+	auto operator^(BitViewType auto lhs, BitViewType auto rhs) -> BitView<BitOpData<decltype(lhs), decltype(rhs), std::bit_xor<BitRow>>> { return {{lhs, rhs}, lhs * rhs}; }
+	auto operator~(BitViewType auto op) -> BitView<BitOpData<decltype(op), void, std::bit_not<BitRow>>> { return {{op}, op}; }
+}
 
 /////////////////////////////////////////////////////
 ///////////////// APPLICATION LOGIC /////////////////
